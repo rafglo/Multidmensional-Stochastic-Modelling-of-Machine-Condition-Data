@@ -98,7 +98,7 @@ def remove_trend(S, trend_window=101):
 # 3. Robust scale estimator SC_x^Q
 # ============================================================
 
-def scq_scale(x, d=2.2219, order_fraction=0.20):
+def scq_scale(x, d=1.85, order_fraction=0.20):
     """
     Robust scale estimator SC_x^Q used in the methodology.
 
@@ -685,3 +685,103 @@ def summarize_1d_estimation(result):
     print("AR order candidates:")
     for item in result["ar_candidates"]:
         print(f"  p={item['p']}: K={item['K']:.6g}")
+
+
+def estimate_1d_model_fixed_ar_order(
+    S,
+    trend_window=101,
+    scale_window=151,
+    ar_order=1,
+    h_max=30,
+    compute_diagnostics=True,
+):
+    """
+    One-dimensional estimation pipeline with a fixed AR order.
+
+    This version follows the same estimation steps as estimate_1d_model:
+    1. estimate trend using moving median,
+    2. remove trend,
+    3. estimate time-varying scale using the full rolling SC_Q estimator,
+    4. normalize the random component,
+    5. fit AR(ar_order) directly,
+    6. estimate alpha from residuals using McCulloch's method.
+
+    The only difference is that the AR order is not searched over.
+    This is appropriate in simulation experiments where the data-generating
+    process is known to be AR(1).
+    """
+    S = _as_1d_array(S)
+
+    # 1. Trend estimation and trend removal
+    R_hat, T_hat = remove_trend(S, trend_window=trend_window)
+
+    # 2. Full scale estimation — no approximation here
+    SC_hat = rolling_scq_scale(R_hat, window=scale_window)
+
+    # 3. Normalization
+    R2_hat = normalize_random_component(R_hat, SC_hat)
+
+    # 4. Fit fixed AR order
+    ar_order = int(ar_order)
+
+    if ar_order < 0:
+        raise ValueError("ar_order must be non-negative.")
+
+    if ar_order == 0:
+        phi_hat = np.array([], dtype=float)
+        intercept_hat = np.median(R2_hat)
+        R3_hat = R2_hat - intercept_hat
+        ar_info = {
+            "is_stationary": True,
+            "used_pinv": False,
+            "robust_location": np.median(R2_hat),
+        }
+    else:
+        phi_hat, intercept_hat, ar_info = estimate_ar_yule_walker_robust(
+            R2_hat,
+            p=ar_order,
+        )
+
+        R3_hat = ar_residuals(
+            R2_hat,
+            phi_hat,
+            intercept=intercept_hat,
+        )
+
+    # 5. Alpha estimation on residuals
+    alpha_hat, alpha_diagnostics = estimate_alpha_mcculloch(R3_hat)
+
+    # 6. Diagnostics, optional
+    if compute_diagnostics:
+        max_lags_R2 = min(h_max, len(R2_hat) - 2)
+        max_lags_R3 = min(h_max, len(R3_hat) - 2)
+
+        acf_R2 = robust_acf(R2_hat, max_lags=max_lags_R2, center=True)
+        acf_R3 = robust_acf(R3_hat, max_lags=max_lags_R3, center=True)
+    else:
+        acf_R2 = None
+        acf_R3 = None
+
+    return {
+        "S": S,
+        "T_hat": T_hat,
+        "R_hat": R_hat,
+        "SC_hat": SC_hat,
+        "R2_hat": R2_hat,
+        "p_opt": ar_order,
+        "phi_hat": phi_hat,
+        "intercept_hat": intercept_hat,
+        "R3_hat": R3_hat,
+        "alpha_hat": alpha_hat,
+        "acf_R2": acf_R2,
+        "acf_R3": acf_R3,
+        "alpha_diagnostics": alpha_diagnostics,
+        "ar_info": ar_info,
+        "settings": {
+            "trend_window": trend_window,
+            "scale_window": scale_window,
+            "ar_order": ar_order,
+            "h_max": h_max,
+            "compute_diagnostics": compute_diagnostics,
+        },
+    }
