@@ -1,6 +1,7 @@
 # estimation_2d.py
 
 import numpy as np
+from scipy.optimize import minimize
 
 from estimation1d import (
     remove_trend,
@@ -324,9 +325,180 @@ def estimate_alpha_2d_from_residuals(R3_hat):
 
     return alpha_hat, component_estimates
 
+# ============================================================
+# 6. Sigma estimation from empirical characteristic function
+# ============================================================
+
+def make_characteristic_grid_2d(grid_size=9, grid_max=3.0):
+    """
+    Creates a two-dimensional grid of frequency points for characteristic
+    function fitting.
+
+    The point (0, 0) is removed, because both empirical and theoretical
+    characteristic functions are equal to 1 there.
+    """
+    values = np.linspace(-grid_max, grid_max, grid_size)
+
+    grid = np.array([
+        [u, v]
+        for u in values
+        for v in values
+        if not (np.isclose(u, 0.0) and np.isclose(v, 0.0))
+    ])
+
+    return grid
+
+
+def empirical_characteristic_function(X, K):
+    """
+    Computes empirical characteristic function values.
+
+    Parameters
+    ----------
+    X : np.ndarray, shape (N, 2)
+        Sample of residual vectors.
+    K : np.ndarray, shape (M, 2)
+        Frequency points.
+
+    Returns
+    -------
+    phi_emp : np.ndarray, shape (M,)
+        Empirical characteristic function values.
+    """
+    X = _as_2d_array(X)
+    K = np.asarray(K, dtype=float)
+
+    projections = X @ K.T
+    phi_emp = np.mean(np.exp(1j * projections), axis=0)
+
+    return phi_emp
+
+
+def sigma_from_cholesky_params(params):
+    """
+    Constructs a positive definite 2x2 Sigma matrix from unconstrained
+    Cholesky parameters.
+
+    L = [[exp(a), 0],
+         [b, exp(c)]]
+
+    Sigma = L L^T.
+    """
+    a, b, c = params
+
+    L = np.array([
+        [np.exp(a), 0.0],
+        [b, np.exp(c)],
+    ])
+
+    Sigma = L @ L.T
+
+    return Sigma
+
+
+def estimate_sigma_characteristic_function(
+    R3_hat,
+    alpha_hat,
+    grid_size=9,
+    grid_max=3.0,
+    maxiter=300,
+):
+    """
+    Estimates the covariance matrix Sigma of the Gaussian vector used in the
+    sub-Gaussian SαS construction.
+
+    The estimator minimizes the squared distance between the empirical and
+    theoretical characteristic functions.
+
+    Parameters
+    ----------
+    R3_hat : np.ndarray, shape (N, 2)
+        Estimated VAR residuals.
+    alpha_hat : float
+        Estimated stability index.
+    grid_size : int
+        Number of grid points per dimension.
+    grid_max : float
+        Grid range is [-grid_max, grid_max]^2.
+    maxiter : int
+        Maximum number of optimizer iterations.
+
+    Returns
+    -------
+    Sigma_hat : np.ndarray, shape (2, 2)
+        Estimated covariance matrix.
+    info : dict
+        Optimization details.
+    """
+    R3_hat = _as_2d_array(R3_hat)
+
+    if not (0 < alpha_hat <= 2):
+        raise ValueError("alpha_hat must satisfy 0 < alpha_hat <= 2.")
+
+    K = make_characteristic_grid_2d(
+        grid_size=grid_size,
+        grid_max=grid_max,
+    )
+
+    phi_emp = empirical_characteristic_function(R3_hat, K)
+
+    def objective(params):
+        Sigma = sigma_from_cholesky_params(params)
+
+        quadratic = np.einsum("ij,jk,ik->i", K, Sigma, K)
+        quadratic = np.maximum(quadratic, 0.0)
+
+        phi_theoretical = np.exp(
+            -((0.5 * quadratic) ** (alpha_hat / 2.0))
+        )
+
+        differences = phi_emp - phi_theoretical
+
+        return float(np.mean(np.abs(differences) ** 2))
+
+    # Several generic starting points. They do not use the true Sigma.
+    starts = [
+        np.array([np.log(0.5), 0.0, np.log(0.5)]),
+        np.array([np.log(0.8), 0.0, np.log(0.8)]),
+        np.array([np.log(1.0), 0.0, np.log(1.0)]),
+        np.array([np.log(0.8), 0.3, np.log(0.8)]),
+        np.array([np.log(0.8), -0.3, np.log(0.8)]),
+    ]
+
+    best_result = None
+
+    for start in starts:
+        result = minimize(
+            objective,
+            x0=start,
+            method="L-BFGS-B",
+            options={
+                "maxiter": maxiter,
+                "ftol": 1e-10,
+            },
+        )
+
+        if best_result is None or result.fun < best_result.fun:
+            best_result = result
+
+    Sigma_hat = sigma_from_cholesky_params(best_result.x)
+
+    info = {
+        "success": best_result.success,
+        "message": best_result.message,
+        "objective_value": best_result.fun,
+        "params": best_result.x,
+        "grid_size": grid_size,
+        "grid_max": grid_max,
+        "alpha_used": alpha_hat,
+        "n_points": len(K),
+    }
+
+    return Sigma_hat, info
+
 
 # ============================================================
-# 6. Full 2D estimation pipeline
+# 7. Full 2D estimation pipeline
 # ============================================================
 
 def estimate_2d_model_fixed_var1(
@@ -336,6 +508,10 @@ def estimate_2d_model_fixed_var1(
     h_max=30,
     compute_diagnostics=True,
     scale_multiplier=1.0,
+    estimate_sigma=False,
+    sigma_grid_size=9,
+    sigma_grid_max=3.0,
+    sigma_maxiter=300,
 ):
     """
     Full two-dimensional estimation pipeline with fixed VAR(1) order.
@@ -382,6 +558,19 @@ def estimate_2d_model_fixed_var1(
 
     # 6. Alpha
     alpha_hat, alpha_info = estimate_alpha_2d_from_residuals(R3_hat)
+    
+    # 7. Sigma estimation
+    if estimate_sigma:
+        Sigma_hat, sigma_info = estimate_sigma_characteristic_function(
+            R3_hat,
+            alpha_hat=alpha_hat,
+            grid_size=sigma_grid_size,
+            grid_max=sigma_grid_max,
+            maxiter=sigma_maxiter,
+        )
+    else:
+        Sigma_hat = None
+        sigma_info = None
 
     # 7. Diagnostics
     if compute_diagnostics:
@@ -408,6 +597,8 @@ def estimate_2d_model_fixed_var1(
         "R3_hat": R3_hat,
         "alpha_hat": alpha_hat,
         "alpha_info": alpha_info,
+        "Sigma_hat": Sigma_hat,
+        "sigma_info": sigma_info,
         "var_info": var_info,
         "diagnostics_R2": diagnostics_R2,
         "diagnostics_R3": diagnostics_R3,
@@ -418,6 +609,9 @@ def estimate_2d_model_fixed_var1(
             "compute_diagnostics": compute_diagnostics,
             "var_order": 1,
             "scale_multiplier": scale_multiplier,
+            "estimate_sigma": estimate_sigma,
+            "sigma_grid_size": sigma_grid_size,
+            "sigma_grid_max": sigma_grid_max,
         },
     }
 
@@ -436,3 +630,7 @@ def summarize_2d_estimation(est):
     print("Componentwise alpha:")
     print(f"  alpha_1: {est['alpha_info']['alpha_1']:.4f}")
     print(f"  alpha_2: {est['alpha_info']['alpha_2']:.4f}")
+    if est.get("Sigma_hat") is not None:
+        print()
+        print("Estimated Sigma:")
+        print(est["Sigma_hat"])
