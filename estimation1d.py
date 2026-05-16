@@ -98,7 +98,7 @@ def remove_trend(S, trend_window=101):
 # 3. Robust scale estimator SC_x^Q
 # ============================================================
 
-def scq_scale(x, d=1.85, order_fraction=0.20):
+def scq_scale(x, d=1.65, order_fraction=0.20):
     """
     Robust scale estimator SC_x^Q used in the methodology.
 
