@@ -96,7 +96,7 @@ def normalize_random_component_2d(R_hat, SC_hat):
 
 
 # ============================================================
-# 3. Robust NCV and VAR(1) estimation
+# 3. Robust NCV and VAR estimation
 # ============================================================
 
 def normalized_covariation_matrix(X, lag=0):
@@ -191,6 +191,112 @@ def estimate_var1_ncv(R2_hat):
     return Theta_hat, info
 
 
+def normalized_covariation_matrix_any_lag(X, lag=0):
+    """
+    Estimates the normalized covariation matrix NCV(lag) for positive,
+    zero and negative lags.
+
+    For lag k, the (i,j)-th entry is computed from pairs
+
+        X_i(t), X_j(t-k),
+
+    whenever both indices are available. This convention matches the
+    block Yule-Walker system used for VAR(p) estimation.
+    """
+    X = _as_2d_array(X)
+    lag = int(lag)
+
+    N = X.shape[0]
+    idx_current_all = np.arange(N)
+    idx_lagged_all = idx_current_all - lag
+
+    valid = (
+        (idx_current_all >= 0)
+        & (idx_current_all < N)
+        & (idx_lagged_all >= 0)
+        & (idx_lagged_all < N)
+    )
+
+    idx_current = idx_current_all[valid]
+    idx_lagged = idx_lagged_all[valid]
+
+    if len(idx_current) == 0:
+        return np.zeros((2, 2), dtype=float)
+
+    current = X[idx_current]
+    lagged = X[idx_lagged]
+
+    NCV = np.zeros((2, 2), dtype=float)
+
+    for i in range(2):
+        for j in range(2):
+            numerator = np.sum(current[:, i] * np.sign(lagged[:, j]))
+            denominator = np.sum(np.abs(lagged[:, j]))
+
+            if denominator == 0:
+                NCV[i, j] = 0.0
+            else:
+                NCV[i, j] = numerator / denominator
+
+    return NCV
+
+
+def estimate_varp_ncv(R2_hat, p=1):
+    """
+    Estimates a VAR(p) model using a robust normalized-covariation
+    Yule-Walker-type system.
+
+    The returned array has shape (p, 2, 2), where ``Theta_hats[i]`` is the
+    matrix multiplying lag i+1.
+    """
+    R2_hat = _as_2d_array(R2_hat)
+    p = int(p)
+
+    if p < 1:
+        raise ValueError("p must be at least 1.")
+
+    if p >= R2_hat.shape[0]:
+        raise ValueError("p must be smaller than the number of observations.")
+
+    ncv = {
+        lag: normalized_covariation_matrix_any_lag(R2_hat, lag=lag)
+        for lag in range(-(p - 1), p + 1)
+    }
+
+    # Right-hand side: [NCV(1), ..., NCV(p)], shape (2, 2p).
+    ncv_y = np.block([ncv[lag] for lag in range(1, p + 1)])
+
+    # Block matrix with block (i,j) equal to NCV(i-j), shape (2p, 2p).
+    ncv_xx = np.block([
+        [ncv[i - j] for j in range(p)]
+        for i in range(p)
+    ])
+
+    try:
+        theta_block = ncv_y @ np.linalg.inv(ncv_xx)
+        used_pinv = False
+    except np.linalg.LinAlgError:
+        theta_block = ncv_y @ np.linalg.pinv(ncv_xx)
+        used_pinv = True
+
+    Theta_hats = np.zeros((p, 2, 2), dtype=float)
+
+    for i in range(p):
+        start = 2 * i
+        end = 2 * (i + 1)
+        Theta_hats[i] = theta_block[:, start:end]
+
+    info = {
+        "NCV": ncv,
+        "NCV_y": ncv_y,
+        "NCV_xx": ncv_xx,
+        "used_pinv": used_pinv,
+        "condition_number": np.linalg.cond(ncv_xx),
+    }
+
+    return Theta_hats, info
+
+
 def var1_residuals(R2_hat, Theta_hat):
     """
     Computes VAR(1) residuals:
@@ -212,6 +318,39 @@ def var1_residuals(R2_hat, Theta_hat):
     for t in range(1, N):
         fitted = Theta_hat @ R2_hat[t - 1]
         residuals[t - 1] = R2_hat[t] - fitted
+
+    return residuals
+
+
+def varp_residuals(R2_hat, Theta_hats):
+    """
+    Computes residuals for a VAR(p) model:
+
+        R3(t) = R2(t) - sum_{i=1}^p Theta_i R2(t-i).
+
+    Returns residuals of length N-p.
+    """
+    R2_hat = _as_2d_array(R2_hat)
+    Theta_hats = np.asarray(Theta_hats, dtype=float)
+
+    if Theta_hats.ndim != 3 or Theta_hats.shape[1:] != (2, 2):
+        raise ValueError("Theta_hats must have shape (p, 2, 2).")
+
+    p = Theta_hats.shape[0]
+    N = R2_hat.shape[0]
+
+    if p >= N:
+        raise ValueError("VAR order p must be smaller than the number of observations.")
+
+    residuals = np.zeros((N - p, 2), dtype=float)
+
+    for t in range(p, N):
+        fitted = np.zeros(2, dtype=float)
+
+        for lag in range(1, p + 1):
+            fitted += Theta_hats[lag - 1] @ R2_hat[t - lag]
+
+        residuals[t - p] = R2_hat[t] - fitted
 
     return residuals
 
@@ -608,6 +747,120 @@ def estimate_2d_model_fixed_var1(
             "h_max": h_max,
             "compute_diagnostics": compute_diagnostics,
             "var_order": 1,
+            "scale_multiplier": scale_multiplier,
+            "estimate_sigma": estimate_sigma,
+            "sigma_grid_size": sigma_grid_size,
+            "sigma_grid_max": sigma_grid_max,
+        },
+    }
+
+
+def estimate_2d_model_fixed_var_order(
+    S,
+    p=6,
+    trend_window=101,
+    scale_window=51,
+    h_max=20,
+    compute_diagnostics=True,
+    scale_multiplier=1.0,
+    estimate_sigma=False,
+    sigma_grid_size=7,
+    sigma_grid_max=3.0,
+    sigma_maxiter=300,
+):
+    """
+    Full two-dimensional estimation pipeline with a fixed VAR(p) order.
+
+    This function is intended for the real-data IMS analysis, where the
+    reference workflow uses VAR(6). It does not change the VAR(1) pipeline
+    used in the simulation sections.
+    """
+    S = _as_2d_array(S)
+    p = int(p)
+
+    if p < 1:
+        raise ValueError("p must be at least 1.")
+
+    R_hat, T_hat = remove_trend_2d(
+        S,
+        trend_window=trend_window,
+    )
+
+    SC_hat = estimate_scale_2d(
+        R_hat,
+        scale_window=scale_window,
+        scale_multiplier=scale_multiplier,
+    )
+
+    R2_hat = normalize_random_component_2d(
+        R_hat,
+        SC_hat,
+    )
+
+    Theta_hats, var_info = estimate_varp_ncv(R2_hat, p=p)
+
+    R3_hat = varp_residuals(
+        R2_hat,
+        Theta_hats,
+    )
+
+    alpha_hat, alpha_info = estimate_alpha_2d_from_residuals(R3_hat)
+
+    if estimate_sigma:
+        try:
+            Sigma_hat, sigma_info = estimate_sigma_characteristic_function(
+                R3_hat,
+                alpha_hat=alpha_hat,
+                grid_size=sigma_grid_size,
+                grid_max=sigma_grid_max,
+                maxiter=sigma_maxiter,
+            )
+        except Exception as exc:
+            Sigma_hat = None
+            sigma_info = {
+                "success": False,
+                "message": f"Sigma estimation failed: {exc}",
+            }
+    else:
+        Sigma_hat = None
+        sigma_info = None
+
+    if compute_diagnostics:
+        diagnostics_R2 = compute_2d_acf_ccf_diagnostics(
+            R2_hat,
+            max_lags=h_max,
+        )
+
+        diagnostics_R3 = compute_2d_acf_ccf_diagnostics(
+            R3_hat,
+            max_lags=h_max,
+        )
+    else:
+        diagnostics_R2 = None
+        diagnostics_R3 = None
+
+    return {
+        "S": S,
+        "T_hat": T_hat,
+        "R_hat": R_hat,
+        "SC_hat": SC_hat,
+        "R2_hat": R2_hat,
+        "Theta_hats": Theta_hats,
+        "Theta_hat": Theta_hats[0],
+        "R3_hat": R3_hat,
+        "alpha_hat": alpha_hat,
+        "alpha_info": alpha_info,
+        "Sigma_hat": Sigma_hat,
+        "sigma_info": sigma_info,
+        "var_info": var_info,
+        "diagnostics_R2": diagnostics_R2,
+        "diagnostics_R3": diagnostics_R3,
+        "settings": {
+            "trend_window": trend_window,
+            "scale_window": scale_window,
+            "h_max": h_max,
+            "compute_diagnostics": compute_diagnostics,
+            "var_order": p,
             "scale_multiplier": scale_multiplier,
             "estimate_sigma": estimate_sigma,
             "sigma_grid_size": sigma_grid_size,
