@@ -2,5 +2,6 @@ numpy
 pandas
 matplotlib
 scipy
+statsmodels
 jupyter
-nbformat
+ipykernel
