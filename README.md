@@ -2,58 +2,39 @@
 
 Final project for **Computer Modelling and Simulation of Stochastic Processes**.
 
-`notebook.ipynb` is the final report notebook and should be opened from the
-repository root. It contains the written report, simulations, estimation
-results, Monte Carlo summaries, diagnostics, and the real-data analysis.
+The main report is contained in:
+
+```text
+notebook.ipynb
+```
+
+The notebook includes the theoretical description, simulation studies, Monte Carlo experiments, parameter estimation, residual diagnostics and real-data analysis.
 
 ## Repository Structure
 
-- `notebook.ipynb` - final report notebook.
-- `ims_set1_bearing1_rms_hi.csv` - processed IMS Bearing Dataset RMS health
-  index cache used by the real-data section.
-- `real_data_mbb_ci_VAR6_h20_B200.pkl` - cached Moving Block Bootstrap ACF/CCF
-  confidence intervals for the real-data VAR(6), h=20 analysis.
-- `simulation1d.py` - one-dimensional alpha-stable model simulation.
-- `estimation1d.py` - one-dimensional trend, scale, AR, residual, and alpha
-  estimation utilities.
-- `simulation2d.py` - two-dimensional model simulation and sub-Gaussian noise
-  generation.
-- `estimation2d.py` - two-dimensional trend, scale, VAR, diagnostic, alpha, and
-  Sigma estimation utilities.
-- `monte_carlo_utils.py` - reusable Monte Carlo runners and summary helpers.
-- `plotting_utils.py` - reusable plotting functions for notebook figures.
-- `real_data_analysis.py` - IMS cache loading, optional RMS recomputation,
-  Moving Block Bootstrap diagnostics, VAR path simulation, and validation
-  helpers.
-- `archive/` - old, backup, and presentation-only notebooks. These files are
-  preserved for reference but are not part of the final report.
+* `notebook.ipynb` - final report notebook.
+* `simulation1d.py` - simulation of the one-dimensional degradation model.
+* `estimation1d.py` - estimation methods for the one-dimensional model.
+* `simulation2d.py` - simulation of the multidimensional degradation model and sub-Gaussian noise.
+* `estimation2d.py` - estimation methods for the multidimensional model.
+* `monte_carlo_utils.py` - reusable Monte Carlo experiment utilities.
+* `plotting_utils.py` - plotting functions used in the notebook.
+* `real_data_analysis.py` - utilities for real-data loading, bootstrap diagnostics, model simulation and validation.
+* `ims_set1_bearing1_rms_hi.csv` - processed RMS health index used in the real-data section.
+* `real_data_mbb_ci_VAR6_h20_B200.pkl` - cached Moving Block Bootstrap confidence intervals used for ACF/CCF diagnostics in the real-data section.
+* `requirements.txt` - Python dependencies.
 
-## IMS Real Data
+## Real Data
 
-The raw IMS Bearing Dataset is not included in this repository. The notebook can
-run the current real-data section using the processed cache file:
+The real-data section uses the processed IMS Bearing Dataset health index stored in:
 
 ```text
 ims_set1_bearing1_rms_hi.csv
 ```
 
-The notebook path for this cache is:
+This file is included in the repository, so the notebook can be run without the raw IMS dataset.
 
-```python
-IMS_CACHE = Path("ims_set1_bearing1_rms_hi.csv")
-```
-
-If you want to recompute RMS values from the raw IMS files, place the raw files
-in:
-
-```text
-ims/1st_test/1st_test
-```
-
-Otherwise, the cache CSV in the repository root is enough for the current
-real-data section. The raw `ims/` folder is intentionally ignored by Git.
-
-The real-data bootstrap confidence intervals are cached in:
+The bootstrap confidence intervals for real-data ACF/CCF diagnostics are loaded from:
 
 ```text
 real_data_mbb_ci_VAR6_h20_B200.pkl
@@ -61,7 +42,7 @@ real_data_mbb_ci_VAR6_h20_B200.pkl
 
 ## Installation
 
-Install dependencies with:
+Install the required Python packages with:
 
 ```bash
 pip install -r requirements.txt
@@ -69,10 +50,10 @@ pip install -r requirements.txt
 
 ## Running the Project
 
-Open and run the final report notebook:
+Open and run the final report notebook from the repository root:
 
 ```bash
 jupyter notebook notebook.ipynb
 ```
 
-Run it from the repository root so the relative cache paths continue to work.
+The notebook should be run from the root folder so that the relative paths to the data and cache files work correctly.
